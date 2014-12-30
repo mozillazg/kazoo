@@ -6,9 +6,7 @@ try:
 except ImportError:  # pragma: nocover
     HAS_FNCTL = False
 import functools
-import os
 import atexit
-import socket
 import errno
 
 
@@ -24,30 +22,30 @@ def _set_default_tcpsock_options(module, sock):
     return sock
 
 
-def create_socket_pair(port=0):
+def create_socket_pair(module, port=0):
     """Create socket pair.
 
     If socket.socketpair isn't available, we emulate it.
     """
     # See if socketpair() is available.
-    have_socketpair = hasattr(socket, 'socketpair')
+    have_socketpair = hasattr(module, 'socketpair')
     if have_socketpair:
-        client_sock, srv_sock = socket.socketpair()
+        client_sock, srv_sock = module.socketpair()
         return client_sock, srv_sock
 
     # Create a non-blocking temporary server socket
-    temp_srv_sock = socket.socket()
+    temp_srv_sock = module.socket()
     temp_srv_sock.setblocking(False)
     temp_srv_sock.bind(('', port))
     port = temp_srv_sock.getsockname()[1]
     temp_srv_sock.listen(1)
 
     # Create non-blocking client socket
-    client_sock = socket.socket()
+    client_sock = module.socket()
     client_sock.setblocking(False)
     try:
         client_sock.connect(('localhost', port))
-    except socket.error as err:
+    except module.error as err:
         # EWOULDBLOCK is not an error, as the socket is non-blocking
         if err.errno != errno.EWOULDBLOCK:
             raise
