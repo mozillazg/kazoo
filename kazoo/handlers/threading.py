@@ -12,7 +12,6 @@ environments that use threads.
 """
 from __future__ import absolute_import
 
-import atexit
 import logging
 import select
 import socket
@@ -24,7 +23,9 @@ try:
 except ImportError:  # pragma: nocover
     import queue as Queue
 
-from kazoo.handlers.utils import create_tcp_socket, create_tcp_connection
+from kazoo.handlers.utils import (
+    create_tcp_socket, create_tcp_connection,
+    atexit_register, atexit_unregister)
 
 # sentinel objects
 _NONE = object()
@@ -222,7 +223,7 @@ class SequentialThreadingHandler(object):
                 w = self._create_thread_worker(queue)
                 self._workers.append(w)
             self._running = True
-            atexit.register(self.stop)
+            atexit_register(self.stop)
 
     def stop(self):
         """Stop the worker threads and empty all queues."""
@@ -243,8 +244,7 @@ class SequentialThreadingHandler(object):
             # Clear the queues
             self.callback_queue = self.queue_impl()
             self.completion_queue = self.queue_impl()
-            if hasattr(atexit, "unregister"):
-                atexit.unregister(self.stop)
+            atexit_unregister(self.stop)
 
     def select(self, *args, **kwargs):
         return select.select(*args, **kwargs)
