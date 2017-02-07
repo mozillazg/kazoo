@@ -7,6 +7,7 @@ except ImportError:  # pragma: nocover
     HAS_FNCTL = False
 import functools
 import os
+import atexit
 
 
 def _set_fd_cloexec(fd):
@@ -91,3 +92,14 @@ def wrap(async_result):
             return value
         return captured_function
     return capture
+
+
+atexit_register = atexit.register
+atexit_unregister = getattr(atexit, 'unregister', None)
+
+
+if atexit_unregister is None:  # Python 2.x
+    def atexit_unregister(func):
+        handler_entries = [e for e in atexit._exithandlers if e[0] == func]
+        for e in handler_entries:
+            atexit._exithandlers.remove(e)
