@@ -5,6 +5,7 @@ from nose.tools import eq_, ok_, assert_not_equal, raises
 
 from kazoo.testing import KazooTestCase
 from kazoo.exceptions import KazooException
+from kazoo.protocol.connection import _CONNECTION_DROP
 from kazoo.recipe.cache import TreeCache, TreeNode, TreeEvent
 
 
@@ -208,7 +209,7 @@ class KazooTreeCacheTests(KazooTestCase):
         with self.spy_client('get_async') as get_data:
             with self.spy_client('get_children_async') as get_children:
                 # session suspended
-                self.lose_connection(self.client.handler.event_object)
+                self.client._call(_CONNECTION_DROP, None)
                 self.wait_cache(TreeEvent.CONNECTION_SUSPENDED)
 
                 # There are a serial refreshing operation here. But NODE_ADDED
