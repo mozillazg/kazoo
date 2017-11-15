@@ -37,6 +37,8 @@ class TreeCache(object):
     STATE_STARTED = 1
     STATE_CLOSED = 2
 
+    _STOP = object()
+
     def __init__(self, client, path):
         self._client = client
         self._root = TreeNode.make_root(self, path)
@@ -45,6 +47,8 @@ class TreeCache(object):
         self._is_initialized = False
         self._error_listeners = []
         self._event_listeners = []
+        self._task_queue = client.handler.queue_impl()
+        self._task_thread = None
 
     def start(self):
         """Starts the cache.
@@ -67,6 +71,7 @@ class TreeCache(object):
         else:
             raise KazooException('already started')
 
+        self._task_thread = self._client.handler.spawn(self._do_background)
         self._client.add_listener(self._session_watcher)
         self._client.ensure_path(self._root._path)
 
@@ -88,6 +93,7 @@ class TreeCache(object):
         """
         if self._state == self.STATE_STARTED:
             self._state = self.STATE_CLOSED
+            self._task_queue.put(self._STOP)
             self._client.remove_listener(self._session_watcher)
             with handle_exception(self._error_listeners):
                 self._root.on_deleted()
@@ -169,7 +175,16 @@ class TreeCache(object):
                 listener(event)
 
     def _in_background(self, func, *args, **kwargs):
-        self._client.handler.callback_queue.put(lambda: func(*args, **kwargs))
+        self._task_queue.put((func, args, kwargs))
+
+    def _do_background(self):
+        while True:
+            with handle_exception(self._error_listeners):
+                cb = self._task_queue.get()
+                if cb is self._STOP:
+                    break
+                func, args, kwargs = cb
+                func(*args, **kwargs)
 
     def _session_watcher(self, state):
         if state == KazooState.SUSPENDED:
@@ -280,38 +295,35 @@ class TreeNode(object):
         logger.debug('process_result: %s %s', method_name, path)
         if method_name == 'exists':
             assert self._parent is None, 'unexpected EXISTS on non-root'
-            # the value of result will be set with `None` if node not exists.
-            if result.get() is not None:
+            # The result will be `None` if the node doesn't exist.
+            if result.successful() and result.get() is not None:
                 if self._state == self.STATE_DEAD:
                     self._state = self.STATE_PENDING
                 self.on_created()
         elif method_name == 'get_children':
-            try:
+            if result.successful():
                 children = result.get()
-            except NoNodeError:
-                self.on_deleted()
-            else:
                 for child in sorted(children):
                     full_path = os.path.join(path, child)
                     if child not in self._children:
                         node = TreeNode(self._tree, full_path, self)
                         self._children[child] = node
                         node.on_created()
-        elif method_name == 'get':
-            try:
-                data, stat = result.get()
-            except NoNodeError:
+            elif isinstance(result.exception, NoNodeError):
                 self.on_deleted()
-            else:
+        elif method_name == 'get':
+            if result.successful():
+                data, stat = result.get()
                 old_data, self._data = (
                     self._data, NodeData.make(path, data, stat))
-
                 old_state, self._state = self._state, self.STATE_LIVE
                 if old_state == self.STATE_LIVE:
                     if old_data is None or old_data.stat.mzxid != stat.mzxid:
                         self._publish_event(TreeEvent.NODE_UPDATED, self._data)
                 else:
                     self._publish_event(TreeEvent.NODE_ADDED, self._data)
+            elif isinstance(result.exception, NoNodeError):
+                self.on_deleted()
         else:  # pragma: no cover
             logger.warning('unknown operation %s', method_name)
             self._tree._outstanding_ops -= 1
