@@ -285,3 +285,7 @@ class SequentialThreadingHandler(object):
 
         """
         self.callback_queue.put(lambda: callback.func(*callback.args))
+
+    @staticmethod
+    def switch(*args, **kwargs):
+        pass

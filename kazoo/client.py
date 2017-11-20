@@ -458,6 +458,7 @@ class KazooClient(object):
             exc = SessionExpiredError()
         else:
             exc = ConnectionLoss()
+            import pdb; pdb.set_trace()
 
         while True:
             try:
@@ -493,6 +494,13 @@ class KazooClient(object):
         CLOSED, EXPIRED_SESSION or CONNECTING state.
 
         """
+        if not hasattr(self, 'c'):
+            self.c = 0
+        else:
+            self.c += 1
+
+        # if self.c % 40 == 0:
+        #     import pdb; pdb.set_trace()
 
         if self._state == KeeperState.AUTH_FAILED:
             async_object.set_exception(AuthFailedError())
@@ -513,9 +521,12 @@ class KazooClient(object):
         if write_pipe is None:
             async_object.set_exception(ConnectionClosedError(
                 "Connection has been closed"))
+
+        print('write')
         try:
             os.write(write_pipe, b'\0')
-        except:
+        except Exception as e:
+            import pdb; pdb.set_trace()
             async_object.set_exception(ConnectionClosedError(
                 "Connection has been closed"))
 
@@ -619,6 +630,7 @@ class KazooClient(object):
 
         """
         if not self._live.is_set():
+            import pdb; pdb.set_trace()
             raise ConnectionLoss("No connection to server")
 
         peer = self._connection._socket.getpeername()

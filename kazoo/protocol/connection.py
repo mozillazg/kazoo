@@ -132,6 +132,8 @@ class RWServerAvailable(Exception):
 
 class ConnectionHandler(object):
     """Zookeeper connection handler"""
+    MAX_SEND_PING_INTERVAL = 10  # 10 seconds
+
     def __init__(self, client, retry_sleeper, logger=None):
         self.client = client
         self.handler = client.handler
@@ -154,6 +156,7 @@ class ConnectionHandler(object):
         self._ro_mode = False
 
         self._connection_routine = None
+        self._last_send = None
 
     # This is instance specific to avoid odd thread bug issues in Python
     # during shutdown global cleanup
@@ -163,6 +166,7 @@ class ConnectionHandler(object):
             yield
         except (socket.error, select.error) as e:
             err = getattr(e, 'strerror', e)
+            import pdb; pdb.set_trace()
             raise ConnectionDropped("socket connection error: %s" % (err,))
 
     def start(self):
@@ -216,6 +220,7 @@ class ConnectionHandler(object):
         remaining = length
         with self._socket_error_handling():
             while remaining > 0:
+                print('select read')
                 s = self.handler.select([self._socket], [], [], timeout)[0]
                 if not s:  # pragma: nocover
                     # If the read list is empty, we got a timeout. We don't
@@ -281,10 +286,19 @@ class ConnectionHandler(object):
 
     def _write(self, msg, timeout):
         """Write a raw msg to the socket"""
+        # if not hasattr(self, '_e'):
+        #     self._e = 0
+        # if random.random() < 0.01 and self._e < 5:
+        #     self._e += 1
+        #     import gevent
+        #     print('network issue in', id(gevent.getcurrent()))
+        #     raise ConnectionDropped('network issue')
+
         sent = 0
         msg_length = len(msg)
         with self._socket_error_handling():
             while sent < msg_length:
+                print('select write')
                 s = self.handler.select([], [self._socket], [], timeout)[1]
                 if not s:  # pragma: nocover
                     # If the write list is empty, we got a timeout. We don't
@@ -441,6 +455,7 @@ class ConnectionHandler(object):
 
         self._submit(request, connect_timeout, xid)
         client._queue.popleft()
+        print('read')
         os.read(self._read_pipe, 1)
         client._pending.append((request, async_object, xid))
 
@@ -513,12 +528,19 @@ class ConnectionHandler(object):
             read_timeout = read_timeout / 1000.0
             connect_timeout = connect_timeout / 1000.0
             retry.reset()
+            self._update_last_send()
             self._xid = 0
 
             while not close_connection:
+                # if self._need_send_ping(read_timeout):
+                #     self._send_ping(connect_timeout)
+                #     self._update_last_send()
+                #     print('ping')
+
                 # Watch for something to read or send
                 jitter_time = random.randint(0, 40) / 100.0
                 # Ensure our timeout is positive
+                print('select connection')
                 timeout = max([read_timeout / 2.0 - jitter_time, jitter_time])
                 s = self.handler.select([self._socket, self._read_pipe],
                                         [], [], timeout)[0]
@@ -534,6 +556,7 @@ class ConnectionHandler(object):
                     close_connection = response == CLOSE_RESPONSE
                 else:
                     self._send_request(read_timeout, connect_timeout)
+                    self._update_last_send()
 
             self.logger.info('Closing connection to %s:%s', host, port)
             client._session_callback(KeeperState.CLOSED)
@@ -623,3 +646,20 @@ class ConnectionHandler(object):
             if zxid:
                 client.last_zxid = zxid
         return read_timeout, connect_timeout
+
+    def _get_time_to_next_ping(self, read_timeout):
+        return read_timeout / 2 - self._get_idle_send() - (
+            1 if self._get_idle_send() > 1 else 0
+        )
+
+    def _update_last_send(self):
+        self._last_send = time.time()
+
+    def _get_idle_send(self):
+        return time.time() - self._last_send
+
+    def _need_send_ping(self, read_timeout):
+        time_to_next_ping = self._get_time_to_next_ping(read_timeout)
+        if (time_to_next_ping <= 0 or
+                self._get_idle_send() > self.MAX_SEND_PING_INTERVAL):
+            return True

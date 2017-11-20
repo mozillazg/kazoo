@@ -158,3 +158,8 @@ class SequentialGeventHandler(object):
 
         """
         self.callback_queue.put(lambda: callback.func(*callback.args))
+
+    @staticmethod
+    def switch(seconds=0.001, ref=True, *args, **kwargs):
+        """switch to another greenlet."""
+        gevent.sleep(seconds=seconds, ref=ref)

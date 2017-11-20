@@ -18,6 +18,7 @@ import logging
 import contextlib
 import functools
 import operator
+import random
 
 from kazoo.exceptions import NoNodeError, KazooException
 from kazoo.protocol.states import KazooState, EventType
@@ -36,10 +37,9 @@ class TreeCache(object):
     STATE_LATENT = 0
     STATE_STARTED = 1
     STATE_CLOSED = 2
-
     _STOP = object()
 
-    def __init__(self, client, path):
+    def __init__(self, client, path, reconnected_refresh_delay=None):
         self._client = client
         self._root = TreeNode.make_root(self, path)
         self._state = self.STATE_LATENT
@@ -49,6 +49,20 @@ class TreeCache(object):
         self._event_listeners = []
         self._task_queue = client.handler.queue_impl()
         self._task_thread = None
+        self._reconnected_queue = client.handler.queue_impl()
+        self._reconnected_thread = None
+        self._sleep_func = client.handler.sleep_func
+        if reconnected_refresh_delay:
+            if callable(reconnected_refresh_delay):
+                self._reconnected_refresh_delay = reconnected_refresh_delay
+            else:
+                self._reconnected_refresh_delay = (
+                    lambda: float(reconnected_refresh_delay)
+                )
+        else:
+            self._reconnected_refresh_delay = (
+                lambda: float(random.randint(30, 50) / 10.0)
+            )
 
     def start(self):
         """Starts the cache.
@@ -71,7 +85,12 @@ class TreeCache(object):
         else:
             raise KazooException('already started')
 
-        self._task_thread = self._client.handler.spawn(self._do_background)
+        self._reconnected_thread = self._client.handler.spawn(
+            self._do_background, self._reconnected_queue
+        )
+        self._task_thread = self._client.handler.spawn(
+            self._do_background, self._task_queue
+        )
         self._client.add_listener(self._session_watcher)
         self._client.ensure_path(self._root._path)
 
@@ -94,6 +113,7 @@ class TreeCache(object):
         if self._state == self.STATE_STARTED:
             self._state = self.STATE_CLOSED
             self._task_queue.put(self._STOP)
+            self._reconnected_queue.put(self._STOP)
             self._client.remove_listener(self._session_watcher)
             with handle_exception(self._error_listeners):
                 self._root.on_deleted()
@@ -177,25 +197,45 @@ class TreeCache(object):
     def _in_background(self, func, *args, **kwargs):
         self._task_queue.put((func, args, kwargs))
 
-    def _do_background(self):
+    def _do_background(self, queue):
         while True:
             with handle_exception(self._error_listeners):
-                cb = self._task_queue.get()
+                cb = queue.get()
                 if cb is self._STOP:
                     break
                 func, args, kwargs = cb
                 func(*args, **kwargs)
+                # self._sleep_func()
 
     def _session_watcher(self, state):
         if state == KazooState.SUSPENDED:
             self._publish_event(TreeEvent.CONNECTION_SUSPENDED)
         elif state == KazooState.CONNECTED:
             with handle_exception(self._error_listeners):
-                self._root.on_reconnected()
+                self._on_reconnected()
                 self._publish_event(TreeEvent.CONNECTION_RECONNECTED)
         elif state == KazooState.LOST:
             self._is_initialized = False
             self._publish_event(TreeEvent.CONNECTION_LOST)
+
+    def _on_reconnected(self):
+        self._reconnected_queue.put((self._handle_reconnected, (), {}))
+
+    def _handle_reconnected(self):
+        # prevent refresh cycle hell
+        if self._outstanding_ops != 0:
+            self._sleep_func(self._reconnected_refresh_delay())
+            self._reconnected_queue.put((self._handle_reconnected, (), {}))
+            return
+
+        while True:
+            try:
+                self._reconnected_queue.get(block=False)
+            except self._client.handler.queue_empty:
+                break
+
+        self._sleep_func(self._reconnected_refresh_delay())
+        self._root.on_reconnected()
 
 
 class TreeNode(object):
@@ -277,6 +317,7 @@ class TreeNode(object):
         kwargs = {'watch': self._process_watch}
         method = getattr(self._tree._client, method_name + '_async')
         method(path, *args, **kwargs).rawlink(callback)
+        self._tree._client.handler.switch(0)
 
     def _process_watch(self, watched_event):
         logger.debug('process_watch: %r', watched_event)
