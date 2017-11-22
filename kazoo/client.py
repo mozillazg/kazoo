@@ -458,7 +458,7 @@ class KazooClient(object):
             exc = SessionExpiredError()
         else:
             exc = ConnectionLoss()
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
 
         while True:
             try:
@@ -514,21 +514,22 @@ class KazooClient(object):
             async_object.set_exception(SessionExpiredError())
             return False
 
-        self._queue.append((request, async_object))
+        with self._connection._lock_write_sock:
+            self._queue.append((request, async_object))
 
-        # wake the connection, guarding against a race with close()
-        write_pipe = self._connection._write_pipe
-        if write_pipe is None:
-            async_object.set_exception(ConnectionClosedError(
-                "Connection has been closed"))
+            # wake the connection, guarding against a race with close()
+            write_sock = self._connection._write_sock
+            if write_sock is None:
+                async_object.set_exception(ConnectionClosedError(
+                    "Connection has been closed"))
 
-        print('write')
-        try:
-            os.write(write_pipe, b'\0')
-        except Exception as e:
-            import pdb; pdb.set_trace()
-            async_object.set_exception(ConnectionClosedError(
-                "Connection has been closed"))
+            print('write')
+            try:
+                write_sock.send(b'\0')
+            except Exception as e:
+                import pdb; pdb.set_trace()
+                async_object.set_exception(ConnectionClosedError(
+                    "Connection has been closed"))
 
     def start(self, timeout=15):
         """Initiate connection to ZK.
@@ -595,7 +596,7 @@ class KazooClient(object):
 
         self._stopped.set()
         self._queue.append((CloseInstance, None))
-        os.write(self._connection._write_pipe, b'\0')
+        self._connection._write_sock.send(b'\0')
         self._safe_close()
 
     def restart(self):
