@@ -211,6 +211,7 @@ class KazooTreeCacheTests(KazooTestCase):
                 # session suspended
                 self.client._call(_CONNECTION_DROP, None)
                 self.wait_cache(TreeEvent.CONNECTION_SUSPENDED)
+                self.cache._is_initialized = False
 
                 # There are a serial refreshing operation here. But NODE_ADDED
                 # events will not be raised because the zxid of nodes are the
@@ -223,6 +224,7 @@ class KazooTreeCacheTests(KazooTestCase):
                 while self.cache._outstanding_ops > 0:
                     self.client.handler.sleep_func(0.1)
 
+                self.wait_cache(TreeEvent.INITIALIZED, timeout=60)
                 # inspect in-memory nodes
                 _node_root = self.cache._root
                 _node_foo = self.cache._root._children['foo']
