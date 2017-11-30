@@ -514,8 +514,10 @@ class KazooClient(object):
             async_object.set_exception(ConnectionClosedError(
                 "Connection has been closed"))
         try:
-            write_sock.send(b'\0')
-        except:
+            with self._connection._lock_write_sock:
+                write_sock.send(b'\0')
+        except BaseException as e:
+            self.logger.info('Catch an error when wake-up socketpair: %s', e)
             async_object.set_exception(ConnectionClosedError(
                 "Connection has been closed"))
 

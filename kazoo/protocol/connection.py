@@ -146,6 +146,7 @@ class ConnectionHandler(object):
 
         self._read_sock = None
         self._write_sock = None
+        self._lock_write_sock = client.handler.lock_object()
 
         self._socket = None
         self._xid = None
